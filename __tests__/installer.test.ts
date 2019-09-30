@@ -1,35 +1,88 @@
+import child_process = require('child_process');
 import io = require('@actions/io');
 import fs = require('fs');
 import nock = require('nock');
 import os = require('os');
 import path = require('path');
 
-const toolDir = path.join(
-  __dirname,
-  'runner',
-  path.join(
-    Math.random()
-      .toString(36)
-      .substring(7)
-  ),
-  'tools'
-);
-const tempDir = path.join(
-  __dirname,
-  'runner',
-  path.join(
-    Math.random()
-      .toString(36)
-      .substring(7)
-  ),
-  'temp'
-);
+function makeTestDir(pathName: string) {
+  return path.join(
+    __dirname,
+    'runner',
+    path.join(
+      Math.random()
+        .toString(36)
+        .substring(7)
+    ),
+    pathName
+  );
+}
+
+const toolDir = makeTestDir('tools');
+const tempDir = makeTestDir('temp');
+const fixtureDir = makeTestDir('generatedFixtures');
 
 process.env['RUNNER_TOOL_CACHE'] = toolDir;
 process.env['RUNNER_TEMP'] = tempDir;
 import * as installer from '../src/installer';
 
 const IS_WINDOWS = process.platform === 'win32';
+
+function makeDirSyncSafe(directory: string) {
+  try {
+    fs.mkdirSync(directory, {recursive: true});
+  } catch (e) {
+    if (e.code !== 'EEXIST') {
+      throw e;
+    }
+  }
+}
+
+function buildFakeNodeFixture(version: string, osArch: string) {
+  makeDirSyncSafe(fixtureDir);
+  if (IS_WINDOWS) {
+    const nodeFolderName = `node-v${version}-win-${osArch}`;
+    const nodeFolderPath = path.join(fixtureDir, nodeFolderName);
+    const nodeBinaryPath = path.join(nodeFolderPath, 'node.exe');
+    makeDirSyncSafe(nodeFolderPath);
+    fs.writeFileSync(nodeBinaryPath, 'nonsense binary content', 'utf8');
+
+    const fixtureName = `mock-${nodeFolderName}.7z`;
+    const fixturePath = path.join(fixtureDir, fixtureName);
+    if (fs.existsSync(fixturePath)) {
+      return fixturePath;
+    }
+
+    const binary7zip = path.join(__dirname, '..', 'externals', '7zr.exe');
+    child_process.execSync(
+      `${binary7zip} a mock-${nodeFolderName}.7z ${nodeFolderName}`,
+      {cwd: fixtureDir}
+    );
+
+    return fixturePath;
+  } else {
+    const nodeFolderName = `node-v${version}-${process.platform}-${osArch}`;
+    const nodeFolderPath = path.join(fixtureDir, nodeFolderName);
+    const nodeBinPath = path.join(nodeFolderPath, 'bin');
+    const nodeBinaryPath = path.join(nodeBinPath, 'node');
+    makeDirSyncSafe(nodeFolderPath);
+    makeDirSyncSafe(nodeBinPath);
+    fs.writeFileSync(nodeBinaryPath, 'nonsense binary content', 'utf8');
+
+    const fixtureName = `mock-${nodeFolderName}.tar.gz`;
+    const fixturePath = path.join(fixtureDir, fixtureName);
+    if (fs.existsSync(fixturePath)) {
+      return fixturePath;
+    }
+
+    child_process.execSync(
+      `tar -czvf mock-${nodeFolderName}.tar.gz ${nodeFolderName}`,
+      {cwd: fixtureDir}
+    );
+
+    return fixturePath;
+  }
+}
 
 describe('installer tests', () => {
   beforeAll(async () => {
@@ -129,20 +182,14 @@ describe('installer tests', () => {
   it('Acquires specified x86 version of node if no matching version is installed', async () => {
     const arch = 'x86';
     const version = '8.8.0';
+    const fixturePath = buildFakeNodeFixture(version, arch);
     const fileExtension = IS_WINDOWS ? '7z' : 'tar.gz';
-    const platform = {
-      linux: 'linux',
-      darwin: 'darwin',
-      win32: 'win'
-    }[process.platform];
+    const platform = IS_WINDOWS ? 'win' : process.platform;
     const fileName = `node-v${version}-${platform}-${arch}.${fileExtension}`;
     const pathOnNodeJs = `/dist/v${version}/${fileName}`;
     const scope = nock('https://nodejs.org')
       .get(pathOnNodeJs)
-      .replyWithFile(
-        200,
-        path.join(__dirname, '__fixtures__', `mock-${fileName}`)
-      );
+      .replyWithFile(200, fixturePath);
     await installer.getNode(version, arch);
     const nodeDir = path.join(toolDir, 'node', version, arch);
 
@@ -158,20 +205,14 @@ describe('installer tests', () => {
   it('Acquires specified x64 version of node if no matching version is installed', async () => {
     const arch = 'x64';
     const version = '8.9.1';
+    const fixturePath = buildFakeNodeFixture(version, arch);
     const fileExtension = IS_WINDOWS ? '7z' : 'tar.gz';
-    const platform = {
-      linux: 'linux',
-      darwin: 'darwin',
-      win32: 'win'
-    }[process.platform];
+    const platform = IS_WINDOWS ? 'win' : process.platform;
     const fileName = `node-v${version}-${platform}-${arch}.${fileExtension}`;
     const pathOnNodeJs = `/dist/v${version}/${fileName}`;
     const scope = nock('https://nodejs.org')
       .get(pathOnNodeJs)
-      .replyWithFile(
-        200,
-        path.join(__dirname, '__fixtures__', `mock-${fileName}`)
-      );
+      .replyWithFile(200, fixturePath);
     await installer.getNode(version, arch);
     const nodeDir = path.join(toolDir, 'node', version, arch);
 
